@@ -103,7 +103,7 @@ static void Ap_join(js_State *J)
 		seplen = 1;
 	}
 
-	if (len == 0) {
+	if (len <= 0) {
 		js_pushliteral(J, "");
 		return;
 	}
@@ -123,11 +123,15 @@ static void Ap_join(js_State *J)
 		n += strlen(r);
 
 		if (k == 0) {
-			out = js_malloc(J, n);
+			if (n > JS_STRLIMIT)
+				js_rangeerror(J, "invalid string length");
+			out = js_malloc(J, (int)n);
 			strcpy(out, r);
 		} else {
 			n += seplen;
-			out = js_realloc(J, out, n);
+			if (n > JS_STRLIMIT)
+				js_rangeerror(J, "invalid string length");
+			out = js_realloc(J, out, (int)n);
 			strcat(out, sep);
 			strcat(out, r);
 		}
@@ -289,7 +293,7 @@ static int sortcmp(const void *avoid, const void *bvoid)
 
 static void Ap_sort(js_State *J)
 {
-	struct sortslot *array = NULL;
+	struct sortslot * volatile array = NULL;
 	int i, n, len;
 
 	len = js_getlength(J, 0);
@@ -300,8 +304,6 @@ static void Ap_sort(js_State *J)
 
 	if (len >= INT_MAX / (int)sizeof(*array))
 		js_rangeerror(J, "array is too large to sort");
-
-	array = js_malloc(J, len * sizeof *array);
 
 	/* Holding objects where the GC cannot see them is illegal, but if we
 	 * don't allow the GC to run we can use qsort() on a temporary array of
@@ -314,6 +316,8 @@ static void Ap_sort(js_State *J)
 		js_free(J, array);
 		js_throw(J);
 	}
+
+	array = js_malloc(J, len * sizeof *array);
 
 	n = 0;
 	for (i = 0; i < len; ++i) {
@@ -423,9 +427,20 @@ static void Ap_unshift(js_State *J)
 
 static void Ap_toString(js_State *J)
 {
-	int top = js_gettop(J);
-	js_pop(J, top - 1);
-	Ap_join(J);
+	if (!js_iscoercible(J, 0))
+		js_typeerror(J, "'this' is not an object");
+	js_getproperty(J, 0, "join");
+	if (!js_iscallable(J, -1)) {
+		js_pop(J, 1);
+		// TODO: call Object.prototype.toString implementation directly
+		js_getglobal(J, "Object");
+		js_getproperty(J, -1, "prototype");
+		js_rot2pop1(J);
+		js_getproperty(J, -1, "toString");
+		js_rot2pop1(J);
+	}
+	js_copy(J, 0);
+	js_call(J, 0);
 }
 
 static void Ap_indexOf(js_State *J)

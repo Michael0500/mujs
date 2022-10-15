@@ -8,17 +8,22 @@
 #include <assert.h>
 #include <errno.h>
 
+static int js_ptry(js_State *J) {
+	if (J->trytop == JS_TRYLIMIT) {
+		STACK[TOP].type = JS_TLITSTR;
+		STACK[TOP].u.litstr = "exception stack overflow";
+		++TOP;
+		return 1;
+	}
+	return 0;
+}
+
 static void *js_defaultalloc(void *actx, void *ptr, int size)
 {
-#ifndef __has_feature
-#define __has_feature(x) 0
-#endif
-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
 	if (size == 0) {
 		free(ptr);
 		return NULL;
 	}
-#endif
 	return realloc(ptr, (size_t)size);
 }
 
@@ -36,6 +41,8 @@ static void js_defaultpanic(js_State *J)
 
 int js_ploadstring(js_State *J, const char *filename, const char *source)
 {
+	if (js_ptry(J))
+		return 1;
 	if (js_try(J))
 		return 1;
 	js_loadstring(J, filename, source);
@@ -45,6 +52,8 @@ int js_ploadstring(js_State *J, const char *filename, const char *source)
 
 int js_ploadfile(js_State *J, const char *filename)
 {
+	if (js_ptry(J))
+		return 1;
 	if (js_try(J))
 		return 1;
 	js_loadfile(J, filename);
@@ -55,6 +64,10 @@ int js_ploadfile(js_State *J, const char *filename)
 const char *js_trystring(js_State *J, int idx, const char *error)
 {
 	const char *s;
+	if (js_ptry(J)) {
+		js_pop(J, 1);
+		return error;
+	}
 	if (js_try(J)) {
 		js_pop(J, 1);
 		return error;
@@ -67,6 +80,10 @@ const char *js_trystring(js_State *J, int idx, const char *error)
 double js_trynumber(js_State *J, int idx, double error)
 {
 	double v;
+	if (js_ptry(J)) {
+		js_pop(J, 1);
+		return error;
+	}
 	if (js_try(J)) {
 		js_pop(J, 1);
 		return error;
@@ -79,6 +96,10 @@ double js_trynumber(js_State *J, int idx, double error)
 int js_tryinteger(js_State *J, int idx, int error)
 {
 	int v;
+	if (js_ptry(J)) {
+		js_pop(J, 1);
+		return error;
+	}
 	if (js_try(J)) {
 		js_pop(J, 1);
 		return error;
@@ -91,6 +112,10 @@ int js_tryinteger(js_State *J, int idx, int error)
 int js_tryboolean(js_State *J, int idx, int error)
 {
 	int v;
+	if (js_ptry(J)) {
+		js_pop(J, 1);
+		return error;
+	}
 	if (js_try(J)) {
 		js_pop(J, 1);
 		return error;
@@ -113,7 +138,7 @@ static void js_loadstringx(js_State *J, const char *filename, const char *source
 	P = jsP_parse(J, filename, source);
 	F = jsC_compilescript(J, P, iseval ? J->strict : J->default_strict);
 	jsP_freeparse(J);
-	js_newscript(J, F, iseval ? (J->strict ? J->E : NULL) : J->GE, iseval ? JS_CEVAL : JS_CSCRIPT);
+	js_newscript(J, F, iseval ? (J->strict ? J->E : NULL) : J->GE);
 
 	js_endtry(J);
 }
@@ -194,6 +219,11 @@ void js_loadfile(js_State *J, const char *filename)
 
 int js_dostring(js_State *J, const char *source)
 {
+	if (js_ptry(J)) {
+		js_report(J, "exception stack overflow");
+		js_pop(J, 1);
+		return 1;
+	}
 	if (js_try(J)) {
 		js_report(J, js_trystring(J, -1, "Error"));
 		js_pop(J, 1);
@@ -209,6 +239,11 @@ int js_dostring(js_State *J, const char *source)
 
 int js_dofile(js_State *J, const char *filename)
 {
+	if (js_ptry(J)) {
+		js_report(J, "exception stack overflow");
+		js_pop(J, 1);
+		return 1;
+	}
 	if (js_try(J)) {
 		js_report(J, js_trystring(J, -1, "Error"));
 		js_pop(J, 1);
