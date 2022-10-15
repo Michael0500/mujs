@@ -2,7 +2,8 @@
 
 #include "jsi.h"
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (_MSC_VER < 1700) /* VS2012 has stdint.h */
+typedef unsigned int uint32_t;
 typedef unsigned __int64 uint64_t;
 #else
 #include <stdint.h>
@@ -406,9 +407,9 @@ static diy_fp_t multiply(diy_fp_t x, diy_fp_t y)
 
 static uint64_t double_to_uint64(double d)
 {
-	union { double d; uint64_t n; } tmp;
-	tmp.d = d;
-	return tmp.n;
+	uint64_t n;
+	memcpy(&n, &d, 8);
+	return n;
 }
 
 #define DP_SIGNIFICAND_SIZE 52
@@ -690,7 +691,7 @@ js_strtod(const char *string, char **endPtr)
 			}
 			expSign = FALSE;
 		}
-		while ((*p >= 0) && (*p <= '9')) {
+		while ((*p >= '0') && (*p <= '9')) {
 			exp = exp * 10 + (*p - '0');
 			p += 1;
 		}
@@ -708,15 +709,19 @@ js_strtod(const char *string, char **endPtr)
 	 * fraction.
 	 */
 
-	if (exp < 0) {
+	if (exp < -maxExponent) {
+		exp = maxExponent;
+		expSign = TRUE;
+		errno = ERANGE;
+	} else if (exp > maxExponent) {
+		exp = maxExponent;
+		expSign = FALSE;
+		errno = ERANGE;
+	} else if (exp < 0) {
 		expSign = TRUE;
 		exp = -exp;
 	} else {
 		expSign = FALSE;
-	}
-	if (exp > maxExponent) {
-		exp = maxExponent;
-		errno = ERANGE;
 	}
 	dblExp = 1.0;
 	for (d = powersOf10; exp != 0; exp >>= 1, d += 1) {

@@ -43,7 +43,7 @@ static int jsW_snprintf(char *str, size_t size, const char *fmt, ...)
 #define isnan(x) _isnan(x)
 #define isinf(x) (!_finite(x))
 #define isfinite(x) _finite(x)
-static __inline int signbit(double x) {union{double d;__int64 i;}u;u.d=x;return u.i>>63;}
+static __inline int signbit(double x) { __int64 i; memcpy(&i, &x, 8); return i>>63; }
 #define INFINITY (DBL_MAX+DBL_MAX)
 #define NAN (INFINITY-INFINITY)
 #endif
@@ -69,14 +69,37 @@ typedef struct js_StackTrace js_StackTrace;
 
 /* Limits */
 
+#ifndef JS_STACKSIZE
 #define JS_STACKSIZE 256	/* value stack size */
-#define JS_ENVLIMIT 64		/* environment stack size */
+#endif
+#ifndef JS_ENVLIMIT
+#define JS_ENVLIMIT 128		/* environment stack size */
+#endif
+#ifndef JS_TRYLIMIT
 #define JS_TRYLIMIT 64		/* exception stack size */
-#define JS_GCLIMIT 10000	/* run gc cycle every N allocations */
+#endif
+#ifndef JS_GCFACTOR
+/*
+ * GC will try to trigger when memory usage is this value times the minimum
+ * needed memory. E.g. if there are 100 remaining objects after GC and this
+ * value is 5.0, then the next GC will trigger when the overall number is 500.
+ * I.e. a value of 5.0 aims at 80% garbage, 20% remain-used on each GC.
+ * The bigger the value the less impact GC has on overall performance, but more
+ * memory is used and individual GC pauses are longer (but fewer).
+ */
+#define JS_GCFACTOR 5.0		/* memory overhead factor >= 1.0 */
+#endif
+#ifndef JS_ASTLIMIT
 #define JS_ASTLIMIT 100		/* max nested expressions */
+#endif
 
 /* instruction size -- change to int if you get integer overflow syntax errors */
+
+#ifdef JS_INSTRUCTION
+typedef JS_INSTRUCTION js_Instruction;
+#else
 typedef unsigned short js_Instruction;
+#endif
 
 /* String interning */
 
@@ -93,8 +116,9 @@ double js_strtod(const char *as, char **aas);
 
 /* Private stack functions */
 
+void js_newarguments(js_State *J);
 void js_newfunction(js_State *J, js_Function *function, js_Environment *scope);
-void js_newscript(js_State *J, js_Function *function, js_Environment *scope);
+void js_newscript(js_State *J, js_Function *fun, js_Environment *scope, int type);
 void js_loadeval(js_State *J, const char *filename, const char *source);
 
 js_Regexp *js_toregexp(js_State *J, int idx);
@@ -142,6 +166,14 @@ void *js_savetrypc(js_State *J, js_Instruction *pc);
 #define js_trypc(J, PC) \
 	setjmp(js_savetrypc(J, PC))
 
+/* String buffer */
+
+typedef struct js_Buffer { int n, m; char s[64]; } js_Buffer;
+
+void js_putc(js_State *J, js_Buffer **sbp, int c);
+void js_puts(js_State *J, js_Buffer **sb, const char *s);
+void js_putm(js_State *J, js_Buffer **sb, const char *s, const char *e);
+
 /* State struct */
 
 struct js_State
@@ -171,7 +203,6 @@ struct js_State
 
 	/* parser state */
 	int astdepth;
-	int astline;
 	int lookahead;
 	const char *text;
 	double number;
@@ -195,6 +226,8 @@ struct js_State
 	js_Object *TypeError_prototype;
 	js_Object *URIError_prototype;
 
+	unsigned int seed; /* Math.random seed */
+
 	int nextref; /* for js_ref use */
 	js_Object *R; /* registry of hidden values */
 	js_Object *G; /* the global object */
@@ -206,12 +239,15 @@ struct js_State
 	js_Value *stack;
 
 	/* garbage collector list */
+	int gcpause;
 	int gcmark;
-	int gccounter;
+	unsigned int gccounter, gcthresh;
 	js_Environment *gcenv;
 	js_Function *gcfun;
 	js_Object *gcobj;
 	js_String *gcstr;
+
+	js_Object *gcroot; /* gc scan list */
 
 	/* environments on the call stack but currently not in scope */
 	int envtop;

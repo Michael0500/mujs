@@ -7,29 +7,40 @@ bindir ?= $(prefix)/bin
 incdir ?= $(prefix)/include
 libdir ?= $(prefix)/lib
 
-VERSION = $(shell git describe --tags --always)
+ifeq "$(wildcard .git)" ".git"
+  VERSION := $(shell git describe --tags --always)
+else
+  VERSION := $(shell basename $$PWD | sed -e s,^mujs-,,)
+endif
 
 # Compiler flags for various configurations:
 
-CFLAGS := -std=c99 -pedantic -Wall -Wextra -Wno-unused-parameter
+CFLAGS += -std=c99 -pedantic -Wall -Wextra -Wno-unused-parameter
 
 ifeq "$(CC)" "clang"
-CFLAGS += -Wunreachable-code
+  CFLAGS += -Wunreachable-code
 endif
 
 ifeq "$(shell uname)" "Linux"
-CFLAGS += -ffunction-sections -fdata-sections
-LDFLAGS += -Wl,--gc-sections -Wl,-s
+  HAVE_READLINE := yes
 endif
 
 ifeq "$(build)" "debug"
-CFLAGS += -g
+  CFLAGS += -g
 else ifeq "$(build)" "sanitize"
-CFLAGS += -pipe -g -fsanitize=address -fno-omit-frame-pointer
-LDFLAGS += -fsanitize=address
-else
-CFLAGS += -Os
+  CFLAGS += -pipe -g -fsanitize=address -fno-omit-frame-pointer
+  LDFLAGS += -fsanitize=address
+else ifeq "$(build)" "release"
+  CFLAGS += -Os
+  LDFLAGS += -Wl,-s
 endif
+
+ifeq "$(HAVE_READLINE)" "yes"
+  CFLAGS += -DHAVE_READLINE
+  LIBREADLINE += -lreadline
+endif
+
+CFLAGS += $(XCFLAGS)
 
 # You shouldn't need to edit anything below here.
 
@@ -38,9 +49,10 @@ OUT := build/$(build)
 SRCS := $(wildcard js*.c utf*.c regexp.c)
 HDRS := $(wildcard js*.h mujs.h utf.h regexp.h)
 
-default: static
-static: $(OUT) $(OUT)/mujs $(OUT)/libmujs.a $(OUT)/mujs.pc
-shared: static $(OUT)/libmujs.so
+default: shell
+shell: $(OUT)/mujs $(OUT)/mujs-pp
+static: $(OUT)/libmujs.a
+shared: $(OUT)/libmujs.so
 
 astnames.h: jsparse.h
 	grep -E '(AST|EXP|STM)_' jsparse.h | sed 's/^[^A-Z]*\(AST_\)*/"/;s/,.*/",/' | tr A-Z a-z > $@
@@ -53,50 +65,66 @@ one.c: $(SRCS)
 
 jsdump.c: astnames.h opnames.h
 
-$(OUT):
-	mkdir -p $(OUT)
-
-$(OUT)/main.o: main.c $(HDRS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+$(OUT)/%.o: %.c $(HDRS)
+	@ mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ -c $<
 
 $(OUT)/libmujs.o: one.c $(HDRS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+	@ mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ -c $<
 
 $(OUT)/libmujs.a: $(OUT)/libmujs.o
-	$(AR) cru $@ $^
+	@ mkdir -p $(dir $@)
+	$(AR) cr $@ $^
 
 $(OUT)/libmujs.so: one.c $(HDRS)
-	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -lm
+	@ mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -fPIC -shared $(LDFLAGS) -o $@ $< -lm
 
 $(OUT)/mujs: $(OUT)/libmujs.o $(OUT)/main.o
+	@ mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBREADLINE) -lm
+
+$(OUT)/mujs-pp: $(OUT)/libmujs.o $(OUT)/pp.o
+	@ mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
+.PHONY: $(OUT)/mujs.pc
 $(OUT)/mujs.pc:
 	@ echo Creating $@
 	@ echo > $@ Name: mujs
 	@ echo >> $@ Description: MuJS embeddable Javascript interpreter
 	@ echo >> $@ Version: $(VERSION)
-	@ echo >> $@ URL: http://dev.mujs.com/
 	@ echo >> $@ Cflags: -I$(incdir)
 	@ echo >> $@ Libs: -L$(libdir) -lmujs
 	@ echo >> $@ Libs.private: -lm
 
-install-common: release
+watch:
+	@ while ! inotifywait -q -e modify $(SRCS) $(HDRS) ; do time -p $(MAKE) ; done
+
+install-common: $(OUT)/mujs $(OUT)/mujs.pc
 	install -d $(DESTDIR)$(incdir)
 	install -d $(DESTDIR)$(libdir)
 	install -d $(DESTDIR)$(libdir)/pkgconfig
 	install -d $(DESTDIR)$(bindir)
 	install -m 644 mujs.h $(DESTDIR)$(incdir)
-	install -m 644 build/release/mujs.pc $(DESTDIR)$(libdir)/pkgconfig
-	install -m 755 build/release/mujs $(DESTDIR)$(bindir)
+	install -m 644 $(OUT)/mujs.pc $(DESTDIR)$(libdir)/pkgconfig
+	install -m 755 $(OUT)/mujs $(DESTDIR)$(bindir)
 
-install-static: install-common
-	install -m 644 build/release/libmujs.a $(DESTDIR)$(libdir)
+install-static: install-common $(OUT)/libmujs.a
+	install -m 644 $(OUT)/libmujs.a $(DESTDIR)$(libdir)
 
-install-shared: install-common
-	install -m 755 build/release/libmujs.so $(DESTDIR)$(libdir)
+install-shared: install-common $(OUT)/libmujs.so
+	install -m 755 $(OUT)/libmujs.so $(DESTDIR)$(libdir)
 
 install: install-static
+
+uninstall:
+	rm -f $(DESTDIR)$(bindir)/mujs
+	rm -f $(DESTDIR)$(incdir)/mujs.h
+	rm -f $(DESTDIR)$(libdir)/pkgconfig/mujs.pc
+	rm -f $(DESTDIR)$(libdir)/libmujs.a
+	rm -f $(DESTDIR)$(libdir)/libmujs.so
 
 tarball:
 	git archive --format=zip --prefix=mujs-$(VERSION)/ HEAD > mujs-$(VERSION).zip
@@ -119,8 +147,8 @@ sanitize:
 	$(MAKE) build=sanitize
 
 release:
-	$(MAKE) build=release shared
+	$(MAKE) build=release
 
-.PHONY: default static shared clean nuke
+.PHONY: default static shared shell clean nuke
 .PHONY: install install-common install-shared install-static
 .PHONY: debug sanitize release
